@@ -54,7 +54,7 @@ CONFIG = {
 # Глобальное состояние
 STATE = {
     'current_day': None,
-    'last_shay_id': None,
+    'last_shay_ids': [],
     'current_shay_name': None
 }
 
@@ -95,6 +95,39 @@ def load_default_names():
     except Exception as e:
         logger.error(f"Error loading default names: {e}", exc_info=True)
         return [CONFIG['DEFAULT_NAME']]
+
+async def save_names_to_file():
+    """Сохраняет все имена из базы данных в файл с добавлением уникальности"""
+    try:
+        names = db_query('SELECT name FROM shays ORDER BY id ASC;')
+        if not names:
+            logger.info("Database is empty, nothing to save")
+            return "База данных пуста, сохранять нечего."
+
+        try:
+            with open(CONFIG['DEFAULT_NAMES_FILE'], 'r', encoding='utf-8') as f:
+                existing_names = {line.strip() for line in f if line.strip()}
+        except FileNotFoundError:
+            existing_names = set()
+
+        # Добавляем новые имена к существующим
+        new_names = {name[0] for name in names}
+        all_names = existing_names | new_names  # Объединение множества без дубликатов
+
+        # Записываем имена обратно в файл
+        with open(CONFIG['DEFAULT_NAMES_FILE'], 'w', encoding='utf-8') as f:
+            first = True
+            for name in sorted(all_names):
+                if not first:
+                    f.write('\n')  # Пишем новую строку только перед не первой записью
+                f.write(name)
+                first = False  # Устанавливаем, что первая запись уже прошла
+
+        logger.info(f"Appended {len(names)} names to {CONFIG['DEFAULT_NAMES_FILE']} with deduplication")
+        return f"{len(new_names)} имен успешно сохранены в {CONFIG['DEFAULT_NAMES_FILE']}."
+    except Exception as e:
+        logger.error(f"Error saving names to file: {e}", exc_info=True)
+        return "Произошла ошибка при сохранении имен в файл."
 
 def db_query(query, params=(), fetch=False):
     """Универсальный запрос к БД"""
@@ -190,13 +223,23 @@ async def send_daily_message(client):
             await asyncio.sleep(60)  # Wait before retrying
 
 def select_random_shay_id():
-    """Выбор случайного ID исключая предыдущий (если возможно)"""
+    """Выбор случайного ID исключая последние 5 использованных (если возможно)"""
     try:
         min_id, max_id = db_query('SELECT MIN(id), MAX(id) FROM shays', fetch=True)
-        available_ids = [id for id in range(min_id, max_id+1)
-                        if id != STATE['last_shay_id'] or max_id == 1]
+        available_ids = [id for id in range(min_id, max_id + 1)
+                         if id not in STATE['last_shay_ids'] or len(STATE['last_shay_ids']) >= (max_id - min_id + 1)]
+
+        if not available_ids:
+            available_ids = range(min_id, max_id + 1)
+
         selected_id = random.choice(available_ids)
-        STATE['last_shay_id'] = selected_id
+
+        # Обновление списка последних ID
+        if selected_id not in STATE['last_shay_ids']:
+            STATE['last_shay_ids'].append(selected_id)
+            if len(STATE['last_shay_ids']) > 5:
+                STATE['last_shay_ids'].pop(0)
+
         logger.debug(f"Selected random shay ID: {selected_id} (available: {len(available_ids)})")
         return selected_id
     except Exception as e:
@@ -227,6 +270,13 @@ async def add_shay(event):
     except Exception as e:
         logger.error(f"Error in add_shay from {event.sender_id}: {e}", exc_info=True)
         await event.reply("Произошла ошибка при добавлении имени.")
+
+async def log_info(client):
+    try:
+        bot_info = await client.get_me()
+        logger.info(f"Bot logged as {bot_info.first_name} (@{bot_info.username}, id: {bot_info.id})")
+    except Exception as e:
+        logger.error(f"Error fetching bot or target chat info: {e}", exc_info=True)
 
 # Инициализация и запуск бота
 def run_bot():
@@ -263,12 +313,22 @@ def run_bot():
             logger.info(f"DB command from {event.sender_id} in chat {event.chat_id}")
             await send_shay_list(event)
 
+        @client.on(events.NewMessage(pattern='/save'))
+        async def save_handler(event):
+            logger.info(f"Save command from {event.sender_id} in chat {event.chat_id}")
+            response = await save_names_to_file()
+            await event.reply(response, parse_mode='md')
+
         if CONFIG['TARGET_CHAT_ID']:
             client.loop.create_task(send_daily_message(client))
 
-        logger.info("Bot starting...")
-        client.start(bot_token=CONFIG['TOKEN'])
-        client.run_until_disconnected()
+        async def start_client():
+            logger.info("Bot starting...")
+            await client.start(bot_token=CONFIG['TOKEN'])
+            await log_info(client)
+            await client.run_until_disconnected()
+
+        client.loop.run_until_complete(start_client())
     except Exception as e:
         logger.critical(f"Fatal error in bot: {e}", exc_info=True)
         raise
