@@ -1,0 +1,11 @@
+[Unit]
+Description=Devplatform COC Alerts Bot
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/coc_bot/
+Restart=on-failure
+ExecStart=python /opt/coc_bot/main.py
+
+[Install]
+WantedBy=network.target
