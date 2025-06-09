@@ -3,9 +3,10 @@ import random
 import sqlite3
 import asyncio
 import logging
-from datetime import datetime, time, timedelta
 from dotenv import load_dotenv
+from unidecode import unidecode
 from telethon import TelegramClient, events
+from datetime import datetime, time, timedelta
 
 # Настройка логирования
 def setup_logging():
@@ -53,7 +54,7 @@ CONFIG = {
 
 # Глобальное состояние
 STATE = {
-    'current_day': None,
+    'current_date': None,
     'last_shay_ids': [],
     'current_shay_name': None
 }
@@ -66,19 +67,26 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS shays (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
+                    normalized_name TEXT NOT NULL UNIQUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
             if not conn.execute('SELECT 1 FROM shays LIMIT 1').fetchone():
                 default_names = load_default_names()
-                conn.executemany('INSERT INTO shays (name) VALUES (?)',
-                               [(name,) for name in default_names])
+                conn.executemany(
+                    'INSERT INTO shays (name, normalized_name) VALUES (?, ?)', 
+                    [(name, normalize_name(name)) for name in default_names]
+                )
             conn.commit()
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing database: {e}", exc_info=True)
         raise
+
+def normalize_name(name):
+    """Нормализация имени для дедупликации"""
+    return unidecode(name.lower().strip())
 
 def load_default_names():
     """Загрузка стандартных имен из файла"""
@@ -124,7 +132,7 @@ async def save_names_to_file():
                 first = False  # Устанавливаем, что первая запись уже прошла
 
         logger.info(f"Appended {len(names)} names to {CONFIG['DEFAULT_NAMES_FILE']} with deduplication")
-        return f"{len(new_names)} имен успешно сохранены в {CONFIG['DEFAULT_NAMES_FILE']}."
+        return f"Имена ({len(new_names)}) успешно сохранены на сервере."
     except Exception as e:
         logger.error(f"Error saving names to file: {e}", exc_info=True)
         return "Произошла ошибка при сохранении имен в файл."
@@ -145,7 +153,7 @@ def db_query(query, params=(), fetch=False):
 async def send_shay_list(event):
     """Отправка списка всех имен"""
     try:
-        names = db_query('SELECT name FROM shays ORDER BY id ASC;')
+        names = db_query('SELECT name FROM shays ORDER BY created_at DESC;')
         if not names:
             await event.reply("База данных пуста.")
             logger.info("Empty database response sent")
@@ -165,16 +173,15 @@ async def send_shay_list(event):
 async def get_daily_shay():
     """Получение имени на сегодня"""
     try:
-        today = datetime.now().day
+        today = datetime.now().date()
 
-        if today == STATE['current_day'] and STATE['current_shay_name']:
-            logger.debug("Returning cached shay for today")
+        if today == STATE.get('current_date') and STATE['current_shay_name']:
             return (
                 f"__Я уже говорил__.\n\n**{STATE['current_shay_name']}** - сегодня величайшего зовут так.",
                 STATE['current_shay_name']
             )
 
-        STATE['current_day'] = today
+        STATE['current_date'] = today
         shay_id = select_random_shay_id()
         STATE['current_shay_name'] = db_query(
             'SELECT name FROM shays WHERE id = ?',
@@ -193,6 +200,21 @@ async def get_daily_shay():
     except Exception as e:
         logger.error(f"Error getting daily shay: {e}", exc_info=True)
         return "Произошла ошибка при выборе имени на сегодня.", None
+
+async def reset_daily_shay():
+    """Сброс ежедневного выбора в 00:00"""
+    while True:
+        now = datetime.now()
+        next_day = now.replace(hour=4, minute=0, second=0) + timedelta(days=1)
+        wait_seconds = (next_day - now).total_seconds()
+
+        logger.info(f"Waiting {wait_seconds:.0f} seconds until midnight reset")
+        await asyncio.sleep(wait_seconds)
+
+        STATE['current_date'] = None
+        STATE['current_shay_name'] = None
+        logger.info("Daily shay reset at midnight")
+
 
 async def send_daily_message(client):
     """Ежедневная отправка сообщения в указанное время"""
@@ -216,8 +238,18 @@ async def send_daily_message(client):
                 logger.error("Failed to get shay name for daily message")
                 continue
 
-            await client.send_message(CONFIG['TARGET_CHAT_ID'], response, parse_mode='md')
-            logger.info(f"Sent daily message to target chat {CONFIG['TARGET_CHAT_ID']}")
+            if CONFIG['TARGET_CHAT_ID']:
+                await client.send_message(CONFIG['TARGET_CHAT_ID'], response, parse_mode='md')
+                logger.info(f"Sent daily message to target chat {CONFIG['TARGET_CHAT_ID']}")
+            else:
+                dialogs = await client.get_dialogs()
+                for dialog in dialogs:
+                    if dialog.is_group:
+                        try:
+                            await client.send_message(dialog.id, response, parse_mode='md')
+                            logger.info(f"Sent daily message to group {dialog.id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send to group {dialog.id}: {str(e)}")
         except Exception as e:
             logger.error(f"Error in daily message loop: {e}", exc_info=True)
             await asyncio.sleep(60)  # Wait before retrying
@@ -247,7 +279,7 @@ def select_random_shay_id():
         return 1  # Fallback to default ID
 
 async def add_shay(event):
-    """Добавление нового имени с автоматической капитализацией"""
+    """Добавление нового имени с автоматической капитализацией и дедупликацией"""
     try:
         name = event.raw_text[5:].strip()
 
@@ -257,16 +289,36 @@ async def add_shay(event):
             return
 
         capitalized_name = ' '.join(word.capitalize() for word in name.split())
-        logger.info(f"Attempting to add new name from {event.sender_id}: {capitalized_name}")
+        normalized_name = normalize_name(capitalized_name)
+        logger.info(f"Attempting to add new name from {event.sender_id}: {capitalized_name} (normalized: {normalized_name})")
+
+        # Проверка на дубликаты по нормализованному имени
+        existing = db_query(
+            'SELECT name FROM shays WHERE normalized_name = ?',
+            (normalized_name,),
+            fetch=True
+        )
+
+        if existing:
+            await event.reply(f"Такое имя уже существует: **{existing[0]}**", parse_mode='md')
+            logger.warning(f"Duplicate name attempt from {event.sender_id}: {capitalized_name} (existing: {existing[0]})")
+            return
 
         try:
-            db_query('INSERT INTO shays (name) VALUES (?)', (capitalized_name,))
+            db_query(
+                'INSERT INTO shays (name, normalized_name) VALUES (?, ?)',
+                (capitalized_name, normalized_name)
+            )
             await event.reply(f"Добавлено новое имя: **{capitalized_name}**!", parse_mode='md')
             logger.info(f"Successfully added new name: {capitalized_name}")
         except sqlite3.IntegrityError:
-            existing_name = db_query('SELECT name FROM shays WHERE name = ?', (capitalized_name,), fetch=True)
+            existing_name = db_query(
+                'SELECT name FROM shays WHERE normalized_name = ?',
+                (normalized_name,),
+                fetch=True
+            )
             await event.reply(f"Такое имя уже существует: **{existing_name[0]}**", parse_mode='md')
-            logger.warning(f"Duplicate name attempt from {event.sender_id}: {capitalized_name}")
+            logger.warning(f"Late duplicate detection for name: {capitalized_name}")
     except Exception as e:
         logger.error(f"Error in add_shay from {event.sender_id}: {e}", exc_info=True)
         await event.reply("Произошла ошибка при добавлении имени.")
