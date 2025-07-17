@@ -207,7 +207,7 @@ async def get_daily_shay():
         response = (
             f"**Вот это да!**\nСегодня {CONFIG['DEFAULT_NAME']} и есть {CONFIG['DEFAULT_NAME']}. Удивительно."
             if shay_id == 1 else
-            f"**{STATE['current_shay_name']}**, - сегодня величайшего зовут так."
+            f"**{STATE['current_shay_name']}** - сегодня величайшего зовут так."
         )
 
         logger.info(f"Selected new shay for today: {STATE['current_shay_name']} (ID: {shay_id})")
