@@ -71,11 +71,15 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+        try: # Add stat collumn
+            conn.execute('ALTER TABLE shays ADD COLUMN stat INTEGER DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass
 
             if not conn.execute('SELECT 1 FROM shays LIMIT 1').fetchone():
                 default_names = load_default_names()
                 conn.executemany(
-                    'INSERT INTO shays (name, normalized_name) VALUES (?, ?)', 
+                    'INSERT INTO shays (name, normalized_name) VALUES (?, ?)',
                     [(name, normalize_name(name)) for name in default_names]
                 )
             conn.commit()
@@ -151,21 +155,27 @@ def db_query(query, params=(), fetch=False):
         raise
 
 async def send_shay_list(event):
-    """Отправка списка всех имен"""
+    """Отправка списка всех имен и их статистики"""
     try:
-        names = db_query('SELECT name FROM shays ORDER BY created_at DESC;')
-        if not names:
+        rows = db_query('SELECT name, sent_count FROM shays ORDER BY created_at DESC;')
+        if not rows:
             await event.reply("База данных пуста.")
             logger.info("Empty database response sent")
             return
 
-        names_list = "\n".join(f"{i+1}. {name[0]}" for i, name in enumerate(names))
-        response = (
-            f"**Список всех имен ({len(names)}):**\n\n{names_list}\n\n"
-            f"Всего имен: **{len(names)}**"
+        names_list = "\n".join(
+            f"{i+1}. {name} — {count}" for i, (name, count) in enumerate(rows)
         )
-        await event.reply(response, parse_mode='markdown')
-        logger.info(f"Sent list of {len(names)} names to chat {event.chat_id}")
+        total = len(rows)
+        total_sent = sum(count for _, count in rows)
+
+        response = (
+            f"**Список всех имен ({total}):**\n\n{names_list}\n\n"
+            f"Всего имен: **{total}**\n"
+            f"Всего отправок: **{total_sent}**"
+        )
+        await event.reply(response, parse_mode='md')
+        logger.info(f"Sent list of {total} names to chat {event.chat_id}")
     except Exception as e:
         logger.error(f"Error sending shay list: {e}", exc_info=True)
         await event.reply("Произошла ошибка при получении списка имен.")
@@ -188,6 +198,11 @@ async def get_daily_shay():
             (shay_id,),
             fetch=True
         )[0]
+
+        db_query(
+            'UPDATE shays SET sent_count = sent_count + 1 WHERE id = ?',
+            (shay_id,)
+        )
 
         response = (
             f"**Вот это да!**\nСегодня {CONFIG['DEFAULT_NAME']} и есть {CONFIG['DEFAULT_NAME']}. Удивительно."
