@@ -233,6 +233,12 @@ async def send_daily_message(client):
             logger.info(f"Waiting {wait_seconds:.0f} seconds until next message at {target_time}")
             await asyncio.sleep(wait_seconds)
 
+            # >>> Do not send on weekend <<<
+            today = datetime.now().weekday()
+            if today in (5, 6):  # 5 = суббота, 6 = воскресенье
+                logger.info("It is weekend, skipping message.")
+                continue
+
             response, shay_name = await get_daily_shay()
             if not shay_name:
                 logger.error("Failed to get shay name for daily message")
