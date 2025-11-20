@@ -1,3 +1,4 @@
+# ghcr.io/navanin/pywhichshay
 FROM python:3.12-slim
 
 # Set envs and workdir
