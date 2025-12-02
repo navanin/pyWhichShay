@@ -27,4 +27,4 @@ RUN chown -R pywhichshay:pywhichshay $APP_HOME
 
 # Run application
 USER pywhichshay
-CMD ["python", "main.py"]
+CMD ["python3", "main.py"]

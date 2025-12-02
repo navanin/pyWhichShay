@@ -48,7 +48,7 @@ CONFIG = {
     'DB_NAME': os.getenv('DB_NAME', 'sqlite.db'),
     'DEFAULT_NAMES_FILE': 'default_names.txt',
     'DEFAULT_NAME': os.getenv('DEFAULT_NAME'),
-    'TARGET_TIME': time(15, 30),  # Время отправки (15:30)
+    'TARGET_TIME': time(11, 30),  # Время отправки (11:30)
     'TARGET_CHAT_ID': int(os.getenv('TARGET_CHAT_ID')) if os.getenv('TARGET_CHAT_ID') else None,
 }
 
@@ -71,10 +71,11 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-        try: # Add stat collumn
-            conn.execute('ALTER TABLE shays ADD COLUMN stats INTEGER DEFAULT 0')
-        except sqlite3.OperationalError:
-            pass
+
+            try:
+                conn.execute('ALTER TABLE shays ADD COLUMN stats INTEGER DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass
 
             if not conn.execute('SELECT 1 FROM shays LIMIT 1').fetchone():
                 default_names = load_default_names()
@@ -82,7 +83,9 @@ def init_db():
                     'INSERT INTO shays (name, normalized_name) VALUES (?, ?)',
                     [(name, normalize_name(name)) for name in default_names]
                 )
+
             conn.commit()
+
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing database: {e}", exc_info=True)
