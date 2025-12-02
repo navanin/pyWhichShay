@@ -22,7 +22,7 @@ RUN groupadd -g 1000 pywhichshay && \
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
-COPY default_names.txt main.py
+COPY main.py default_names.txt ./
 RUN chown -R pywhichshay:pywhichshay $APP_HOME
 
 # Run application
